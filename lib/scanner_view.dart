@@ -15,7 +15,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
   bool _estaProcesando = false;
   MobileScannerController cameraController = MobileScannerController();
 
-  // --- 1. PROCESAMIENTO LIMPIO DEL QR ---
+  // --- 1. PROCESAMIENTO DEL QR (App Empleado) ---
   Future<void> _procesarQR(String qrData) async {
     if (_estaProcesando) return;
     setState(() => _estaProcesando = true);
@@ -23,115 +23,101 @@ class _ScannerScreenState extends State<ScannerScreen> {
     cameraController.stop(); // Pausamos la cámara
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final loggedEmail = prefs.getString('logged_email') ?? '';
-      // IMPORTANTE: Asegúrate de guardar 'logged_password' en tu Pantalla de Login
-      final loggedPassword = prefs.getString('logged_password') ?? ''; 
+      // 1. Desempaquetar el JSON generado por la Tablet
+      final Map<String, dynamic> datosDelQR = json.decode(qrData);
+      print('--- LECTURA CRUDA DEL QR ---');
+      print(qrData);
+      
+      final String ipTablet = datosDelQR['ip'] ?? '';
+      final int puertoTablet = datosDelQR['puerto'] ?? 8080;
+      final int timestampQR = datosDelQR['ts'] ?? 0;
 
-      // Validamos que la sesión exista
-      if (loggedEmail.isEmpty || loggedPassword.isEmpty) {
-        _mostrarMensaje('Sesión Inválida', 'No se encontraron las credenciales. Vuelve a iniciar sesión.', Colors.red);
+      if (ipTablet.isEmpty || timestampQR == 0) {
+        _mostrarMensaje('Error', 'Formato de QR inválido o no compatible.', Colors.red);
         return;
       }
 
-      // Ya no validamos si el correo coincide.
-      // Disparamos directo la petición con la sesión activa y pasamos el texto del QR
-      _mostrarMensajeCarga(); 
-      await _validarRegistroConAPI(loggedEmail, loggedPassword, qrData);
+      // 2. Validación de tiempo (Evitar fotos/capturas de pantalla)
+      final int tiempoActualMs = DateTime.now().millisecondsSinceEpoch;
+      if ((tiempoActualMs - timestampQR) > 15000) {
+        _mostrarMensaje('QR Expirado', 'El código ha caducado. Escanea el código actual de la tablet.', Colors.red);
+        return;
+      }
 
+      // 3. Tomar credenciales del empleado logueado
+      final prefs = await SharedPreferences.getInstance();
+      final loggedEmail = prefs.getString('logged_email') ?? '';
+      final numeroEmpleado = prefs.getString('numero_empleado') ?? '';
+
+      if (loggedEmail.isEmpty || numeroEmpleado.isEmpty) {
+        _mostrarMensaje('Sesión Inválida', 'No hay sesión activa. Vuelve a iniciar sesión.', Colors.red);
+        return;
+      }
+
+      _mostrarMensajeCarga(); 
+      
+      // 4. Enviar los datos a la Tablet en la red local
+      await _validarRegistroConTablet(numeroEmpleado, ipTablet, puertoTablet, qrData);
+
+    } on FormatException {
+      _mostrarMensaje('QR Inválido', 'Este código no pertenece al sistema.', Colors.red);
     } catch (e) {
-      _mostrarMensaje('Error', 'Ocurrió un problema al procesar la cámara.', Colors.red);
+      _mostrarMensaje('Error', 'Ocurrió un problema al leer el QR.', Colors.red);
     }
+    
   }
 
-  // --- 2. FLUJO COMPLETO: API REST ---
-  Future<void> _validarRegistroConAPI(String email, String password, String contenidoQR) async {
-    final urlAuth = Uri.parse('https://controldeasistenciastec.com/2sis/web/api/users/authentication'); 
-    final urlAsistencia = Uri.parse('https://controldeasistenciastec.com/2sis/web/api/asistencias/registrar');
+  // --- 2. COMUNICACIÓN LAN CON LA TABLET ---
+  Future<void> _validarRegistroConTablet(String numEmpleado, String ip, int puerto, String contenidoQR) async {
+    // 🚀 ATENCIÓN: Apuntamos a la Tablet en la red Wi-Fi local.
+    final urlLocalTablet = Uri.parse('http://$ip:$puerto/registrar');
 
-    print('--- PASO 1: Autenticando usuario ---');
+    print('--- Enviando asistencia a la Tablet: $urlLocalTablet ---');
 
     try {
-      // 1. PRIMERA PETICIÓN
-      final respuestaAuth = await http.post(
-        urlAuth,
+      String fechaHoraFormateada = DateTime.now().toString().split('.').first.replaceAll('-', '/');
+
+      // Solo mandamos lo que la Tablet necesita para armar el paquete final
+      final respuestaTablet = await http.post(
+        urlLocalTablet,
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
         body: json.encode({
-          'email': email,
-          'password': password,
+          'datetime': fechaHoraFormateada,
+          'employeeNumber': numEmpleado,
         }),
-      );
+      ).timeout(const Duration(seconds: 5)); // Timeout corto por si usa datos móviles
 
-      if (respuestaAuth.statusCode == 200 || respuestaAuth.statusCode == 201) {
-        final datosRespuesta = json.decode(respuestaAuth.body);
-        final String numeroEmpleadoReal = datosRespuesta['numero_empleado'].toString();
+      if(mounted) Navigator.pop(context); // Quitamos diálogo de carga
+
+      if (respuestaTablet.statusCode == 200 || respuestaTablet.statusCode == 201) {
+        print("--- LA TABLET ACEPTÓ EL REGISTRO ---");
+        await _mostrarDialogoExito(contenidoQR);
         
-        print('--- AUTENTICACIÓN EXITOSA ---');
-        print('Número de empleado obtenido: $numeroEmpleadoReal');
-        print('--- PASO 2: Enviando registro de asistencia ---');
-
-        String fechaHoraFormateada = DateTime.now().toString().split('.').first.replaceAll('-', '/');
-
-        // 2. SEGUNDA PETICIÓN
-        final respuestaAsistencia = await http.post(
-          urlAsistencia,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: json.encode({
-            'datetime': fechaHoraFormateada,
-            'deviceId': '541657958', 
-            'employeeNumber': numeroEmpleadoReal, 
-            'serviceKey': '226BRF1JQY', 
-          }),
-        );
-
-        if(mounted) Navigator.pop(context); // Quitamos el diálogo de carga
-
-        if (respuestaAsistencia.statusCode == 200 || respuestaAsistencia.statusCode == 201) {
-          print("--- ASISTENCIA REGISTRADA CORRECTAMENTE ---");
-          
-          // Mostramos la ventana con la info del QR y esperamos a que se cierre
-          await _mostrarDialogoExito(contenidoQR);
-          
-          // Volvemos a encender la cámara para el siguiente empleado/registro
-          setState(() => _estaProcesando = false);
-          cameraController.start();
-
-        } else {
-          _mostrarMensaje(
-            'Error al Registrar', 
-            'Código: ${respuestaAsistencia.statusCode}\nDetalle: ${respuestaAsistencia.body}', 
-            Colors.orange
-          );
-          print("Error en registro: ${respuestaAsistencia.body}");
-        }
-
+        setState(() => _estaProcesando = false);
+        cameraController.start();
       } else {
-        if(mounted) Navigator.pop(context);
-        _mostrarMensaje(
-          'Credenciales Incorrectas', 
-          'No se pudo autenticar el usuario de la sesión en la API.', 
-          Colors.red
-        );
+        // La tablet rechazó el registro o el servidor de internet falló
+        final errorDecode = json.decode(respuestaTablet.body);
+        _mostrarMensaje('Error de Registro', errorDecode['mensaje'] ?? 'La tablet rechazó el registro.', Colors.orange);
       }
-
     } catch (e) {
       if(mounted) Navigator.pop(context);
-      _mostrarMensaje('Fallo de Conexión', 'Ocurrió un error de red: $e', Colors.red);
-      print("Excepción: $e");
+      
+      // Si el empleado usa datos móviles, la petición caerá aquí por "Timeout"
+      _mostrarMensaje(
+        'Fallo de Red Wi-Fi', 
+        'No se pudo encontrar la Tablet. Asegúrate de estar conectado a la misma red Wi-Fi de la oficina y no usar datos móviles.', 
+        Colors.red
+      );
+      print("Excepción Local: $e");
     } finally {
-      // Liberamos el candado por si ocurre un error y no se reactiva arriba
-      if (_estaProcesando) {
-        setState(() => _estaProcesando = false);
-      }
+      if (_estaProcesando) setState(() => _estaProcesando = false);
     }
   }
-  
+
   // --- 3. NUEVA VENTANA EMERGENTE ---
   Future<void> _mostrarDialogoExito(String datosDelQR) async {
     return showDialog<void>(
@@ -204,7 +190,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
           children: [
             CircularProgressIndicator(),
             SizedBox(width: 20),
-            Text("Validando en servidor..."),
+            Text("Conectando con la Tablet..."),
           ],
         ),
       ),
