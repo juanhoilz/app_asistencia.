@@ -15,48 +15,57 @@ class _ScannerScreenState extends State<ScannerScreen> {
   bool _estaProcesando = false;
   MobileScannerController cameraController = MobileScannerController();
 
-  // --- 1. PROCESAMIENTO DEL QR (App Empleado) ---
-  Future<void> _procesarQR(String qrData) async {
+// --- 1. PROCESAMIENTO DEL QR (App Empleado) ---
+ Future<void> _procesarQR(String qrData) async {
     if (_estaProcesando) return;
     setState(() => _estaProcesando = true);
     
     cameraController.stop(); // Pausamos la cámara
 
     try {
-      // 1. Desempaquetar el JSON generado por la Tablet
-      final Map<String, dynamic> datosDelQR = json.decode(qrData);
       print('--- LECTURA CRUDA DEL QR ---');
       print(qrData);
+      
+      // 1. Desempaquetar el JSON
+      final Map<String, dynamic> datosDelQR = json.decode(qrData);
       
       final String ipTablet = datosDelQR['ip'] ?? '';
       final int puertoTablet = datosDelQR['puerto'] ?? 8080;
       final int timestampQR = datosDelQR['ts'] ?? 0;
 
       if (ipTablet.isEmpty || timestampQR == 0) {
-        _mostrarMensaje('Error', 'Formato de QR inválido o no compatible.', Colors.red);
+        _mostrarMensaje('Error', 'Formato de QR inválido.', Colors.red);
         return;
       }
 
-      // 2. Validación de tiempo (Evitar fotos/capturas de pantalla)
+      // 2. Validación de tiempo (Relajada para pruebas)
       final int tiempoActualMs = DateTime.now().millisecondsSinceEpoch;
-      if ((tiempoActualMs - timestampQR) > 15000) {
-        _mostrarMensaje('QR Expirado', 'El código ha caducado. Escanea el código actual de la tablet.', Colors.red);
+      final int diferenciaMs = tiempoActualMs - timestampQR;
+      
+      print('--- Diferencia de tiempo: $diferenciaMs milisegundos ---');
+
+      // ⚠️ Ampliado a 60,000 ms (1 minuto) por si los relojes están desincronizados
+      if (diferenciaMs > 60000 || diferenciaMs < -60000) {
+        print('❌ BARRERA ACTIVA: El código expiró');
+        _mostrarMensaje('QR Expirado', 'El código ha caducado. Diferencia: ${diferenciaMs}ms', Colors.red);
         return;
       }
 
-      // 3. Tomar credenciales del empleado logueado
+      // 3. Tomar credenciales
       final prefs = await SharedPreferences.getInstance();
-      final loggedEmail = prefs.getString('logged_email') ?? '';
       final numeroEmpleado = prefs.getString('numero_empleado') ?? '';
 
-      if (loggedEmail.isEmpty || numeroEmpleado.isEmpty) {
+      print('--- Número de empleado en memoria: "$numeroEmpleado" ---');
+
+      if (numeroEmpleado.isEmpty) {
+        print('❌ BARRERA ACTIVA: Sesión vacía');
         _mostrarMensaje('Sesión Inválida', 'No hay sesión activa. Vuelve a iniciar sesión.', Colors.red);
         return;
       }
 
       _mostrarMensajeCarga(); 
       
-      // 4. Enviar los datos a la Tablet en la red local
+      // 4. Enviar los datos
       await _validarRegistroConTablet(numeroEmpleado, ipTablet, puertoTablet, qrData);
 
     } on FormatException {
@@ -64,9 +73,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
     } catch (e) {
       _mostrarMensaje('Error', 'Ocurrió un problema al leer el QR.', Colors.red);
     }
-    
   }
-
   // --- 2. COMUNICACIÓN LAN CON LA TABLET ---
   Future<void> _validarRegistroConTablet(String numEmpleado, String ip, int puerto, String contenidoQR) async {
     // 🚀 ATENCIÓN: Apuntamos a la Tablet en la red Wi-Fi local.
@@ -94,6 +101,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
       if (respuestaTablet.statusCode == 200 || respuestaTablet.statusCode == 201) {
         print("--- LA TABLET ACEPTÓ EL REGISTRO ---");
+        
         await _mostrarDialogoExito(contenidoQR);
         
         setState(() => _estaProcesando = false);

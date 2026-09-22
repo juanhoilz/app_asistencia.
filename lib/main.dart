@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'scanner_view.dart'; // Llamamos a la vista del escáner que crearemos en el paso 2
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'scanner_view.dart';
 
 void main() {
   runApp(const MiAppAsistencia());
@@ -32,6 +34,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  bool _isLoading = false;
 
   Future<void> _iniciarSesion() async {
     String email = _emailController.text.trim();
@@ -44,27 +47,50 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // Guardamos los datos de sesión localmente en el teléfono
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('logged_email', email);
-    await prefs.setString('logged_password', password); // Solo con fines de prueba
+    setState(() => _isLoading = true);
 
-    // Si todo va bien, saltamos a la pantalla del Escáner
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ScannerScreen()),
+    try {
+      // 🚀 1. Hacemos login real contra la API para obtener tu número de empleado
+      final url = Uri.parse('https://controldeasistenciastec.com/2sis/web/api/users/authentication');
+      final respuesta = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        body: json.encode({'email': email, 'password': password}),
       );
+
+      if (respuesta.statusCode == 200 || respuesta.statusCode == 201) {
+        final datos = json.decode(respuesta.body);
+        final String numeroEmpleado = datos['numero_empleado'].toString();
+
+        // 🚀 2. Guardamos tu correo y tu número en la memoria del teléfono
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('logged_email', email);
+        await prefs.setString('numero_empleado', numeroEmpleado); 
+
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const ScannerScreen()),
+          );
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Credenciales incorrectas'), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Fallo de red al iniciar sesión.'), backgroundColor: Colors.red),
+      );
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Iniciar Sesión'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('Iniciar Sesión'), centerTitle: true),
       body: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
@@ -75,31 +101,25 @@ class _LoginScreenState extends State<LoginScreen> {
             TextField(
               controller: _emailController,
               keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                labelText: 'Correo electrónico',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.email),
-              ),
+              decoration: const InputDecoration(labelText: 'Correo', border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
             ),
             const SizedBox(height: 20),
             TextField(
               controller: _passwordController,
               obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Contraseña',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.lock),
-              ),
+              decoration: const InputDecoration(labelText: 'Contraseña', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
             ),
             const SizedBox(height: 30),
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _iniciarSesion,
-                child: const Text('Ingresar', style: TextStyle(fontSize: 18)),
-              ),
-            ),
+            _isLoading
+                ? const CircularProgressIndicator()
+                : SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _iniciarSesion,
+                      child: const Text('Ingresar', style: TextStyle(fontSize: 18)),
+                    ),
+                  ),
           ],
         ),
       ),
