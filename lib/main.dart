@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'api_config.dart';
 import 'scanner_view.dart';
 
 void main() {
@@ -51,7 +52,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       // 🚀 1. Hacemos login real contra la API para obtener tu número de empleado
-      final url = Uri.parse('https://controldeasistenciastec.com/2sis/web/api/users/authentication');
+      final url = authenticationUrl;
       final respuesta = await http.post(
         url,
         headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
