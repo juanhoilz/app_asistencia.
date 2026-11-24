@@ -1,30 +1,60 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:app_asistencia/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
-
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+  testWidgets('Required fields and password visibility', (tester) async {
+    await tester.pumpWidget(const MiAppAsistencia());
+    await tester.pumpAndSettle();
+    expect(find.text('Acceso Administrativo'), findsOneWidget);
+    expect(find.byType(Image), findsOneWidget);
+    final password = find.byType(TextField).last;
+    expect(tester.widget<TextField>(password).obscureText, isTrue);
+    await tester.tap(find.byTooltip('Mostrar contraseña'));
     await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(tester.widget<TextField>(password).obscureText, isFalse);
+    await tester.ensureVisible(find.text('Continuar'));
+    await tester.tap(find.text('Continuar'));
+    await tester.pump();
+    expect(find.text('Por favor, llena todos los campos'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
+
+  for (final size in [
+    const Size(320, 568),
+    const Size(412, 915),
+    const Size(800, 1280),
+  ]) {
+    for (final scale in [1.0, 2.0]) {
+      testWidgets('Fits $size at text scale $scale with keyboard', (
+        tester,
+      ) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetViewInsets);
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!,
+            ),
+            home: const LoginScreen(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await tester.ensureVisible(find.byType(TextField).first);
+        await tester.tap(find.byType(TextField).first);
+        tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Continuar'));
+        await tester.pumpAndSettle();
+        expect(find.text('Continuar').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 }

@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+
 import 'dart:convert';
+
 import 'api_config.dart';
 import 'scanner_view.dart';
+import 'login_style.dart';
 
 void main() {
   runApp(const MiAppAsistencia());
@@ -36,8 +39,17 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
 
   Future<void> _iniciarSesion() async {
+    if (_isLoading) return;
     String email = _emailController.text.trim();
     String password = _passwordController.text.trim();
 
@@ -55,7 +67,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final url = authenticationUrl;
       final respuesta = await http.post(
         url,
-        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: json.encode({'email': email, 'password': password}),
       );
 
@@ -66,7 +81,7 @@ class _LoginScreenState extends State<LoginScreen> {
         // 🚀 2. Guardamos tu correo y tu número en la memoria del teléfono
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('logged_email', email);
-        await prefs.setString('numero_empleado', numeroEmpleado); 
+        await prefs.setString('numero_empleado', numeroEmpleado);
 
         if (mounted) {
           Navigator.pushReplacement(
@@ -74,53 +89,187 @@ class _LoginScreenState extends State<LoginScreen> {
             MaterialPageRoute(builder: (context) => const ScannerScreen()),
           );
         }
-      } else {
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Credenciales incorrectas'), backgroundColor: Colors.red),
+          const SnackBar(
+            content: Text('Credenciales incorrectas'),
+            backgroundColor: LoginColors.error,
+          ),
         );
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Fallo de red al iniciar sesión.'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('Fallo de red al iniciar sesión.'),
+          backgroundColor: LoginColors.error,
+        ),
       );
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Iniciar Sesión'), centerTitle: true),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+    final border = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(16),
+      borderSide: const BorderSide(color: LoginColors.border),
+    );
+    return Theme(
+      data: Theme.of(context).copyWith(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: LoginColors.primary,
+          primary: LoginColors.primary,
+          surface: Colors.white,
+          onSurface: LoginColors.graphite,
+          error: LoginColors.error,
+          brightness: Brightness.light,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          floatingLabelBehavior: FloatingLabelBehavior.always,
+          labelStyle: const TextStyle(
+            color: LoginColors.secondary,
+            fontSize: 16,
+          ),
+          floatingLabelStyle: const TextStyle(
+            color: LoginColors.secondary,
+            fontSize: 16,
+          ),
+          prefixIconColor: LoginColors.secondary,
+          suffixIconColor: LoginColors.secondary,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 18,
+          ),
+          border: border,
+          enabledBorder: border,
+          disabledBorder: border,
+          focusedBorder: border.copyWith(
+            borderSide: const BorderSide(color: LoginColors.primary, width: 2),
+          ),
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: LoginColors.pearl,
+        body: LoginSurface(
           children: [
-            const Icon(Icons.person_pin, size: 100, color: Colors.deepPurple),
-            const SizedBox(height: 30),
+            Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                color: LoginColors.graphite,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: Image.asset(
+                'assets/images/icono-qr-logomovil.png',
+                fit: BoxFit.contain,
+                semanticLabel: 'Logo de la aplicación',
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Acceso Administrativo',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: LoginColors.graphite,
+                fontSize: 28,
+                fontWeight: FontWeight.w600,
+                height: 1.2,
+              ),
+            ),
+            const SizedBox(height: 36),
             TextField(
               controller: _emailController,
+              enabled: !_isLoading,
               keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(labelText: 'Correo', border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
+              textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.username],
+              autocorrect: false,
+              style: const TextStyle(fontSize: 16, color: LoginColors.graphite),
+              decoration: const InputDecoration(
+                labelText: 'Correo electrónico',
+                prefixIcon: Icon(Icons.mail_outline),
+              ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
             TextField(
               controller: _passwordController,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Contraseña', border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
+              enabled: !_isLoading,
+              obscureText: _obscurePassword,
+              autocorrect: false,
+              enableSuggestions: false,
+              autofillHints: const [AutofillHints.password],
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _iniciarSesion(),
+              style: const TextStyle(fontSize: 16, color: LoginColors.graphite),
+              decoration: InputDecoration(
+                labelText: 'Contraseña',
+                prefixIcon: const Icon(Icons.lock_outline),
+                suffixIcon: IconButton(
+                  tooltip: _obscurePassword
+                      ? 'Mostrar contraseña'
+                      : 'Ocultar contraseña',
+                  onPressed: _isLoading
+                      ? null
+                      : () => setState(
+                          () => _obscurePassword = !_obscurePassword,
+                        ),
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                ),
+              ),
             ),
-            const SizedBox(height: 30),
-            _isLoading
-                ? const CircularProgressIndicator()
-                : SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: _iniciarSesion,
-                      child: const Text('Ingresar', style: TextStyle(fontSize: 18)),
+            const SizedBox(height: 32),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: ButtonStyle(
+                  minimumSize: const WidgetStatePropertyAll(Size(0, 56)),
+                  padding: const WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  ),
+                  shape: WidgetStatePropertyAll(
+                    RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
                     ),
                   ),
+                  backgroundColor: WidgetStateProperty.resolveWith((states) {
+                    if (states.contains(WidgetState.disabled)) {
+                      return LoginColors.primary.withValues(alpha: 0.6);
+                    }
+                    if (states.contains(WidgetState.pressed)) {
+                      return LoginColors.pressed;
+                    }
+                    return LoginColors.primary;
+                  }),
+                  foregroundColor: const WidgetStatePropertyAll(Colors.white),
+                ),
+                onPressed: _isLoading ? null : _iniciarSesion,
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                          semanticsLabel: 'Iniciando sesión',
+                        ),
+                      )
+                    : const Text(
+                        'Continuar',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+              ),
+            ),
           ],
         ),
       ),
