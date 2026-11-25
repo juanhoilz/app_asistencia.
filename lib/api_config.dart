@@ -1,11 +1,18 @@
 /// Base de la API del servidor; se configura al compilar con --dart-define.
-/// No se utiliza para la comunicación con la tablet indicada por el QR.
+/// Se comparte entre autenticación, renovación y registro directo.
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://192.168.1.52/horaexactaapp/web/api',
+  
+  defaultValue: 'https://controldeasistenciastec.com/2sis/web/api',
+  //defaultValue: 'https://controldeasistenciastec.com/2sis/web/api/asistencias/registrar'
+  //defaultValue: 'http://192.168.1.16/horaexactaapp/web/api',
 );
 
-Uri get authenticationUrl {
+Uri apiEndpoint(String path) {
   final base = apiBaseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
-  return Uri.parse('$base/users/authentication');
+  return Uri.parse('$base/$path');
 }
+
+Uri get authenticationUrl => apiEndpoint('users/authentication');
+Uri get refreshTokenUrl => apiEndpoint('users/authentication/refresh-token');
+Uri get attendanceUrl => apiEndpoint('asistencias/registrar');

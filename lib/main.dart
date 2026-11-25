@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 import 'api_config.dart';
+import 'attendance_service.dart';
 import 'scanner_view.dart';
 import 'login_style.dart';
 
@@ -23,9 +24,45 @@ class MiAppAsistencia extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const LoginScreen(),
+      home: const SessionStart(),
+      routes: {'/login': (_) => const LoginScreen()},
     );
   }
+}
+
+class SessionStart extends StatefulWidget {
+  const SessionStart({super.key});
+  @override
+  State<SessionStart> createState() => _SessionStartState();
+}
+
+class _SessionStartState extends State<SessionStart> {
+  late final restored = _restore();
+  Future<bool> _restore() async {
+    final client = http.Client();
+    try {
+      return await UserSession(
+            await SharedPreferences.getInstance(),
+            client,
+          ).restore() !=
+          null;
+    } finally {
+      client.close();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<bool>(
+    future: restored,
+    builder: (_, snapshot) {
+      if (snapshot.connectionState != ConnectionState.done) {
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      }
+      return snapshot.data == true
+          ? const ScannerScreen()
+          : const LoginScreen();
+    },
+  );
 }
 
 class LoginScreen extends StatefulWidget {
@@ -40,9 +77,11 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  final http.Client _client = http.Client();
 
   @override
   void dispose() {
+    _client.close();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -51,7 +90,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _iniciarSesion() async {
     if (_isLoading) return;
     String email = _emailController.text.trim();
-    String password = _passwordController.text.trim();
+    String password = _passwordController.text;
 
     if (email.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -65,23 +104,23 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       // 🚀 1. Hacemos login real contra la API para obtener tu número de empleado
       final url = authenticationUrl;
-      final respuesta = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: json.encode({'email': email, 'password': password}),
-      );
+      final respuesta = await _client
+          .post(
+            url,
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: json.encode({'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       if (respuesta.statusCode == 200 || respuesta.statusCode == 201) {
         final datos = json.decode(respuesta.body);
-        final String numeroEmpleado = datos['numero_empleado'].toString();
 
         // 🚀 2. Guardamos tu correo y tu número en la memoria del teléfono
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('logged_email', email);
-        await prefs.setString('numero_empleado', numeroEmpleado);
+        await UserSession(prefs, _client).save(datos, email: email);
 
         if (mounted) {
           Navigator.pushReplacement(
@@ -91,8 +130,8 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Credenciales incorrectas'),
+          SnackBar(
+            content: Text(apiError(respuesta, 'No se pudo iniciar sesión')),
             backgroundColor: LoginColors.error,
           ),
         );
@@ -100,8 +139,10 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Fallo de red al iniciar sesión.'),
+        SnackBar(
+          content: Text(
+            e is ApiException ? e.message : 'No se pudo iniciar sesión. Comprueba la conexión y vuelve a intentar.',
+          ),
           backgroundColor: LoginColors.error,
         ),
       );
@@ -171,7 +212,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             const SizedBox(height: 24),
             const Text(
-              'Acceso Administrativo',
+              'Acceso Empleado',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: LoginColors.graphite,

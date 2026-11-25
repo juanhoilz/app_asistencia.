@@ -1,247 +1,241 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+
+import 'attendance_service.dart';
+import 'attendance_clock.dart';
+import 'attendance_queue.dart';
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
-
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
 }
 
-class _ScannerScreenState extends State<ScannerScreen> {
+class _ScannerScreenState extends State<ScannerScreen>
+    with WidgetsBindingObserver {
   bool _estaProcesando = false;
-  MobileScannerController cameraController = MobileScannerController();
+  bool _enviando = false;
+  final MobileScannerController cameraController = MobileScannerController();
+  final http.Client _client = http.Client();
+  late final Future<AttendanceQueue> _queue = _openQueue();
+  Timer? _timer;
+  bool _syncing = false;
+  String _status = '';
 
-// --- 1. PROCESAMIENTO DEL QR (App Empleado) ---
- Future<void> _procesarQR(String qrData) async {
-    if (_estaProcesando) return;
-    setState(() => _estaProcesando = true);
-    
-    cameraController.stop(); // Pausamos la cámara
+  Future<AttendanceQueue> _openQueue() async {
+    final session = UserSession(await SharedPreferences.getInstance(), _client);
+    return AttendanceQueue(
+      AttendanceService(session, _client),
+      await AttendanceQueue.open(),
+    );
+  }
 
-    try {
-      print('--- LECTURA CRUDA DEL QR ---');
-      print(qrData);
-      
-      // 1. Desempaquetar el JSON
-      final Map<String, dynamic> datosDelQR = json.decode(qrData);
-      
-      final String ipTablet = datosDelQR['ip'] ?? '';
-      final int puertoTablet = datosDelQR['puerto'] ?? 8080;
-      final int timestampQR = datosDelQR['ts'] ?? 0;
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _resume();
+  }
 
-      if (ipTablet.isEmpty || timestampQR == 0) {
-        _mostrarMensaje('Error', 'Formato de QR inválido.', Colors.red);
-        return;
-      }
+  void _resume() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 20), (_) => _retry());
+    unawaited(_retry());
+  }
 
-      // 2. Validación de tiempo (Relajada para pruebas)
-      final int tiempoActualMs = DateTime.now().millisecondsSinceEpoch;
-      final int diferenciaMs = tiempoActualMs - timestampQR;
-      
-      print('--- Diferencia de tiempo: $diferenciaMs milisegundos ---');
-
-      // ⚠️ Ampliado a 60,000 ms (1 minuto) por si los relojes están desincronizados
-      if (diferenciaMs > 60000 || diferenciaMs < -60000) {
-        print('❌ BARRERA ACTIVA: El código expiró');
-        _mostrarMensaje('QR Expirado', 'El código ha caducado. Diferencia: ${diferenciaMs}ms', Colors.red);
-        return;
-      }
-
-      // 3. Tomar credenciales
-      final prefs = await SharedPreferences.getInstance();
-      final numeroEmpleado = prefs.getString('numero_empleado') ?? '';
-
-      print('--- Número de empleado en memoria: "$numeroEmpleado" ---');
-
-      if (numeroEmpleado.isEmpty) {
-        print('❌ BARRERA ACTIVA: Sesión vacía');
-        _mostrarMensaje('Sesión Inválida', 'No hay sesión activa. Vuelve a iniciar sesión.', Colors.red);
-        return;
-      }
-
-      _mostrarMensajeCarga(); 
-      
-      // 4. Enviar los datos
-      await _validarRegistroConTablet(numeroEmpleado, ipTablet, puertoTablet, qrData);
-
-    } on FormatException {
-      _mostrarMensaje('QR Inválido', 'Este código no pertenece al sistema.', Colors.red);
-    } catch (e) {
-      _mostrarMensaje('Error', 'Ocurrió un problema al leer el QR.', Colors.red);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _resume();
+    } else {
+      _timer?.cancel();
     }
   }
-  // --- 2. COMUNICACIÓN LAN CON LA TABLET ---
-  Future<void> _validarRegistroConTablet(String numEmpleado, String ip, int puerto, String contenidoQR) async {
-    // 🚀 ATENCIÓN: Apuntamos a la Tablet en la red Wi-Fi local.
-    final urlLocalTablet = Uri.parse('http://$ip:$puerto/registrar');
 
-    print('--- Enviando asistencia a la Tablet: $urlLocalTablet ---');
+  String _summary(List<Map<String, Object?>> rows) {
+    final rejected = rows.where((r) => r['error'] != null).length;
+    if (rows.isEmpty) return '';
+    return 'Pendientes: ${rows.length - rejected}${rejected > 0 ? ' · Rechazadas: $rejected' : ''}';
+  }
 
+  Future<void> _retry() async {
+    if (!mounted || _syncing || _estaProcesando) return;
+    _syncing = true;
     try {
-      String fechaHoraFormateada = DateTime.now().toString().split('.').first.replaceAll('-', '/');
-
-      // Solo mandamos lo que la Tablet necesita para armar el paquete final
-      final respuestaTablet = await http.post(
-        urlLocalTablet,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: json.encode({
-          'datetime': fechaHoraFormateada,
-          'employeeNumber': numEmpleado,
-        }),
-      ).timeout(const Duration(seconds: 5)); // Timeout corto por si usa datos móviles
-
-      if(mounted) Navigator.pop(context); // Quitamos diálogo de carga
-
-      if (respuestaTablet.statusCode == 200 || respuestaTablet.statusCode == 201) {
-        print("--- LA TABLET ACEPTÓ EL REGISTRO ---");
-        
-        await _mostrarDialogoExito(contenidoQR);
-        
-        setState(() => _estaProcesando = false);
-        cameraController.start();
-      } else {
-        // La tablet rechazó el registro o el servidor de internet falló
-        final errorDecode = json.decode(respuestaTablet.body);
-        _mostrarMensaje('Error de Registro', errorDecode['mensaje'] ?? 'La tablet rechazó el registro.', Colors.orange);
+      final queue = await _queue;
+      final owner = await queue.owner();
+      await queue.flush(owner);
+      final status = _summary(await queue.rows(owner));
+      if (mounted && !_estaProcesando && status != _status) {
+        setState(() => _status = status);
       }
-    } catch (e) {
-      if(mounted) Navigator.pop(context);
-      
-      // Si el empleado usa datos móviles, la petición caerá aquí por "Timeout"
-      _mostrarMensaje(
-        'Fallo de Red Wi-Fi', 
-        'No se pudo encontrar la Tablet. Asegúrate de estar conectado a la misma red Wi-Fi de la oficina y no usar datos móviles.', 
-        Colors.red
-      );
-      print("Excepción Local: $e");
+    } on SessionExpiredException {
+      if (mounted && !_estaProcesando) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
+      }
+    } catch (_) {
+      if (mounted && !_estaProcesando) {
+        setState(() => _status = 'Sincronización pendiente');
+      }
     } finally {
-      if (_estaProcesando) setState(() => _estaProcesando = false);
+      _syncing = false;
     }
   }
 
-  // --- 3. NUEVA VENTANA EMERGENTE ---
-  Future<void> _mostrarDialogoExito(String datosDelQR) async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Column(
-            children: [
-              Icon(Icons.check_circle, color: Colors.green, size: 60),
-              SizedBox(height: 15),
-              Text('¡Asistencia Registrada!', textAlign: TextAlign.center),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Tu entrada se ha procesado exitosamente.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Información del QR:',
-                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey),
-              ),
-              const SizedBox(height: 10),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.grey.shade400),
-                ),
-                child: Text(
-                  datosDelQR,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            Center(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Aceptar', style: TextStyle(color: Colors.white, fontSize: 16)),
-              ),
-            ),
-          ],
-        );
-      },
-    );
+  @override
+  void dispose() {
+    _timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _client.close();
+    unawaited(cameraController.dispose());
+    super.dispose();
   }
 
-  // --- MENSAJES DE UTILIDAD ---
-  void _mostrarMensajeCarga() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 20),
-            Text("Conectando con la Tablet..."),
-          ],
-        ),
-      ),
-    );
+  Future<void> _logout() async {
+    if (_syncing || _estaProcesando) return;
+    setState(() => _estaProcesando = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await UserSession(prefs, _client).clear();
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _estaProcesando = false;
+          _status = 'No se pudo cerrar la sesión';
+        });
+      }
+    }
   }
 
-  void _mostrarMensaje(String titulo, String mensaje, Color color) {
-    showDialog(
+  Future<void> _procesarQR(String raw) async {
+    if (_estaProcesando || !mounted) return;
+    setState(() => _estaProcesando = true);
+    bool volverAlLogin = false;
+    bool horaNoDisponible = false;
+    String title;
+    String message;
+    try {
+      final scan = await AttendanceClock.deviceSample();
+      await cameraController.stop();
+      final qr = AttendanceQr.parse(raw);
+      if (!mounted) return;
+      setState(() => _enviando = true);
+      final prefs = await SharedPreferences.getInstance();
+      final scannedAt = await AttendanceClock(prefs, _client).forScan(scan);
+      if (!mounted) return;
+      final queue = await _queue;
+      final who = await queue.owner();
+      final employee = who[2];
+      final id = await queue.enqueue(who, qr, scannedAt.office);
+      await queue.flush(who, now: scannedAt.utc);
+      final rows = await queue.rows(who);
+      _status = _summary(rows);
+      final row = rows.where((r) => r['id'] == id).firstOrNull;
+      if (row?['error'] case final String error) throw ApiException(error);
+      title = row == null
+          ? '¡Asistencia registrada!'
+          : 'Checada guardada · pendiente de envío';
+      message =
+          'Empleado: $employee\nFecha y hora: ${attendanceDateTime(scannedAt.office)}\nDispositivo: ${qr.deviceId}';
+    } on AttendanceTimeUnavailable {
+      horaNoDisponible = true;
+      title = 'No se pudo verificar la hora';
+      message = 'La checada no se envió. Comprueba tu conexión y vuelve a escanear para reintentar.';
+    } on SessionExpiredException catch (e) {
+      volverAlLogin = true;
+      title = 'Sesión vencida';
+      message = e.message;
+    } on FormatException {
+      title = 'Datos inválidos';
+      message = 'Verifica que el QR contenga deviceId y serviceKey como texto y que el servidor responda correctamente.';
+    } on ApiException catch (e) {
+      title = 'No se pudo registrar';
+      message = e.message;
+    } on TimeoutException {
+      title = 'Tiempo de espera agotado';
+      message = 'No se recibió confirmación. Verifica si la asistencia se registró antes de escanear otra vez.';
+    } catch (_) {
+      title = 'No se pudo confirmar el registro';
+      message = 'Comprueba la conexión con el servidor y verifica tu asistencia antes de volver a intentar.';
+    }
+    if (!mounted) return;
+    setState(() => _enviando = false);
+    await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: Text(titulo, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
-        content: Text(mensaje),
+        title: Text(title),
+        content: Text(message),
         actions: [
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              cameraController.start(); 
-            },
-            child: const Text('Entendido'),
-          )
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              volverAlLogin
+                  ? 'Iniciar sesión'
+                  : horaNoDisponible
+                  ? 'Volver a escanear'
+                  : 'Aceptar',
+            ),
+          ),
         ],
       ),
     );
+    if (!mounted) return;
+    if (volverAlLogin) {
+      Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
+      return;
+    }
+    // Liberar el lector también después de QR inválidos y errores de red.
+    setState(() => _estaProcesando = false);
+    try {
+      await cameraController.start();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo reiniciar la cámara. Vuelve a abrir el escáner.',
+          ),
+        ),
+      );
+    }
   }
 
-  // --- INTERFAZ GRÁFICA ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Escáner de Asistencia'),
+        actions: [
+          IconButton(
+            tooltip: 'Cerrar sesión',
+            onPressed: _logout,
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+        bottom: _status.isEmpty
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(30),
+                child: Text(_status),
+              ),
       ),
       body: Stack(
         children: [
           MobileScanner(
             controller: cameraController,
             onDetect: (capture) {
-              final List<Barcode> barcodes = capture.barcodes;
-              for (final barcode in barcodes) {
+              for (final barcode in capture.barcodes) {
                 if (barcode.rawValue != null) {
-                  _procesarQR(barcode.rawValue!);
-                  break; 
+                  unawaited(_procesarQR(barcode.rawValue!));
+                  break;
                 }
               }
             },
@@ -256,6 +250,27 @@ class _ScannerScreenState extends State<ScannerScreen> {
               ),
             ),
           ),
+          if (_enviando)
+            const Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black54,
+                child: Center(
+                  child: Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Registrando asistencia…'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

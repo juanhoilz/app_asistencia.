@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:app_asistencia/main.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStorage.setMockInitialValues({});
+  });
   testWidgets('Required fields and password visibility', (tester) async {
     await tester.pumpWidget(const MiAppAsistencia());
     await tester.pumpAndSettle();
-    expect(find.text('Acceso Administrativo'), findsOneWidget);
+    expect(find.text('Acceso Empleado'), findsOneWidget);
     expect(find.byType(Image), findsOneWidget);
     final password = find.byType(TextField).last;
     expect(tester.widget<TextField>(password).obscureText, isTrue);
