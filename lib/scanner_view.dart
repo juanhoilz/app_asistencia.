@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'attendance_service.dart';
 import 'attendance_clock.dart';
 import 'attendance_queue.dart';
+import 'attendance_confirmation_dialog.dart';
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
@@ -119,6 +120,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     setState(() => _estaProcesando = true);
     bool volverAlLogin = false;
     bool horaNoDisponible = false;
+    bool? pendingConfirmation;
     String title;
     String? message;
     try {
@@ -141,6 +143,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       title = row == null
           ? 'Asistencia registrada'
           : 'Checada guardada · pendiente de envío';
+      pendingConfirmation = row != null;
     } on AttendanceTimeUnavailable {
       horaNoDisponible = true;
       title = 'No se pudo verificar la hora';
@@ -167,22 +170,24 @@ class _ScannerScreenState extends State<ScannerScreen>
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: message == null ? null : Text(message!),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              volverAlLogin
-                  ? 'Iniciar sesión'
-                  : horaNoDisponible
-                  ? 'Volver a escanear'
-                  : 'Aceptar',
+      builder: (context) => pendingConfirmation != null
+          ? AttendanceConfirmationDialog(pending: pendingConfirmation)
+          : AlertDialog(
+              title: Text(title),
+              content: message == null ? null : Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(
+                    volverAlLogin
+                        ? 'Iniciar sesión'
+                        : horaNoDisponible
+                        ? 'Volver a escanear'
+                        : 'Aceptar',
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
     if (!mounted) return;
     if (volverAlLogin) {
