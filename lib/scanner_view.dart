@@ -120,7 +120,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     bool volverAlLogin = false;
     bool horaNoDisponible = false;
     String title;
-    String message;
+    String? message;
     try {
       final scan = await AttendanceClock.deviceSample();
       await cameraController.stop();
@@ -132,7 +132,6 @@ class _ScannerScreenState extends State<ScannerScreen>
       if (!mounted) return;
       final queue = await _queue;
       final who = await queue.owner();
-      final employee = who[2];
       final id = await queue.enqueue(who, qr, scannedAt.office);
       await queue.flush(who, now: scannedAt.utc);
       final rows = await queue.rows(who);
@@ -140,10 +139,8 @@ class _ScannerScreenState extends State<ScannerScreen>
       final row = rows.where((r) => r['id'] == id).firstOrNull;
       if (row?['error'] case final String error) throw ApiException(error);
       title = row == null
-          ? '¡Asistencia registrada!'
+          ? 'Asistencia registrada'
           : 'Checada guardada · pendiente de envío';
-      message =
-          'Empleado: $employee\nFecha y hora: ${attendanceDateTime(scannedAt.office)}\nDispositivo: ${qr.deviceId}';
     } on AttendanceTimeUnavailable {
       horaNoDisponible = true;
       title = 'No se pudo verificar la hora';
@@ -172,7 +169,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text(title),
-        content: Text(message),
+        content: message == null ? null : Text(message!),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
