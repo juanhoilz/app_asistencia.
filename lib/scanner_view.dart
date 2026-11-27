@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,6 +10,7 @@ import 'attendance_service.dart';
 import 'attendance_clock.dart';
 import 'attendance_queue.dart';
 import 'attendance_confirmation_dialog.dart';
+import 'login_style.dart';
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
@@ -18,6 +20,7 @@ class ScannerScreen extends StatefulWidget {
 
 class _ScannerScreenState extends State<ScannerScreen>
     with WidgetsBindingObserver {
+  String? _resultado;
   bool _estaProcesando = false;
   bool _enviando = false;
   final MobileScannerController cameraController = MobileScannerController();
@@ -116,16 +119,21 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   Future<void> _procesarQR(String raw) async {
-    if (_estaProcesando || !mounted) return;
+    if (!mounted || _estaProcesando || _resultado != null) {
+      return;
+    }
     setState(() => _estaProcesando = true);
     bool volverAlLogin = false;
-    bool horaNoDisponible = false;
     bool? pendingConfirmation;
     String title;
     String? message;
     try {
-      final scan = await AttendanceClock.deviceSample();
-      await cameraController.stop();
+      final ClockSample scan;
+      try {
+        scan = await AttendanceClock.deviceSample();
+      } finally {
+        await cameraController.stop();
+      }
       final qr = AttendanceQr.parse(raw);
       if (!mounted) return;
       setState(() => _enviando = true);
@@ -145,7 +153,6 @@ class _ScannerScreenState extends State<ScannerScreen>
           : 'Checada guardada · pendiente de envío';
       pendingConfirmation = row != null;
     } on AttendanceTimeUnavailable {
-      horaNoDisponible = true;
       title = 'No se pudo verificar la hora';
       message = 'La checada no se envió. Comprueba tu conexión y vuelve a escanear para reintentar.';
     } on SessionExpiredException catch (e) {
@@ -178,13 +185,7 @@ class _ScannerScreenState extends State<ScannerScreen>
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    volverAlLogin
-                        ? 'Iniciar sesión'
-                        : horaNoDisponible
-                        ? 'Volver a escanear'
-                        : 'Aceptar',
-                  ),
+                  child: Text(volverAlLogin ? 'Iniciar sesión' : 'Aceptar'),
                 ),
               ],
             ),
@@ -194,24 +195,67 @@ class _ScannerScreenState extends State<ScannerScreen>
       Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
       return;
     }
-    // Liberar el lector también después de QR inválidos y errores de red.
-    setState(() => _estaProcesando = false);
-    try {
-      await cameraController.start();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'No se pudo reiniciar la cámara. Vuelve a abrir el escáner.',
+    setState(() {
+      _resultado = title;
+      _estaProcesando = false;
+    });
+  }
+
+  void _abrirEscaner() {
+    setState(() => _resultado = null);
+  }
+
+  Widget _sinCamara(String resultado) {
+    return ColoredBox(
+      color: LoginColors.pearl,
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Card(
+            margin: EdgeInsets.zero,
+            color: Colors.white,
+            surfaceTintColor: Colors.transparent,
+            elevation: 8,
+            shadowColor: LoginColors.graphite.withValues(alpha: 0.16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: AttendanceResultContent(
+              title: resultado,
+              icon: Icons.qr_code_scanner_rounded,
+              primaryLabel: 'Escanear nuevamente',
+              onPrimary: _estaProcesando ? null : _abrirEscaner,
+              secondaryAction: OutlinedButton(
+                onPressed: _estaProcesando ? null : SystemNavigator.pop,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: LoginColors.primary,
+                  backgroundColor: Colors.white,
+                  minimumSize: const Size(0, 52),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  side: const BorderSide(color: LoginColors.primary),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                child: const Text('Salir'),
+              ),
+            ),
           ),
         ),
-      );
-    }
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final resultado = _resultado;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Escáner de Asistencia'),
@@ -229,52 +273,54 @@ class _ScannerScreenState extends State<ScannerScreen>
                 child: Text(_status),
               ),
       ),
-      body: Stack(
-        children: [
-          MobileScanner(
-            controller: cameraController,
-            onDetect: (capture) {
-              for (final barcode in capture.barcodes) {
-                if (barcode.rawValue != null) {
-                  unawaited(_procesarQR(barcode.rawValue!));
-                  break;
-                }
-              }
-            },
+      body: resultado == null ? _escaner() : _sinCamara(resultado),
+    );
+  }
+
+  Widget _escaner() => Stack(
+    children: [
+      MobileScanner(
+        controller: cameraController,
+        onDetect: (capture) {
+          for (final barcode in capture.barcodes) {
+            if (barcode.rawValue != null) {
+              unawaited(_procesarQR(barcode.rawValue!));
+              break;
+            }
+          }
+        },
+      ),
+      Center(
+        child: Container(
+          width: 250,
+          height: 250,
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.green, width: 4),
+            borderRadius: BorderRadius.circular(12),
           ),
-          Center(
-            child: Container(
-              width: 250,
-              height: 250,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.green, width: 4),
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
-          if (_enviando)
-            const Positioned.fill(
-              child: ColoredBox(
-                color: Colors.black54,
-                child: Center(
-                  child: Card(
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Registrando asistencia…'),
-                        ],
-                      ),
-                    ),
+        ),
+      ),
+      if (_enviando)
+        const Positioned.fill(
+          child: ColoredBox(
+            color: Colors.black54,
+            child: Center(
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('Registrando asistencia…'),
+                    ],
                   ),
                 ),
               ),
             ),
-        ],
-      ),
-    );
-  }
+          ),
+        ),
+    ],
+  );
 }
